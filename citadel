@@ -1,0 +1,229 @@
+#!/usr/bin/env perl
+############################################################################## 
+# citadel ####################################################################
+##############################################################################
+#
+# Citadel is, more or less, a drop-in replacement for dos-deflate (ddos.sh).
+#
+# For some reason, dos-deflate likes to completely ignore the IPs that you've
+# added to your whitelist.  That was the main reason for writing citadel.
+#
+# The only real difference between the two (aside from implementation, as
+# dos-deflate was not referenced in writing citadel) is the config file,
+# located by default at /etc/citadel/citadel.conf.  The format is different
+# so that the file can be sourced by perl.
+#
+##############################################################################
+
+use Socket; # For the nslookup stuff.
+
+##############################################################################
+#
+# These values can be changed if you decide that you'd like to locate the
+# items mentioned in a different filesystem location.
+#
+##############################################################################
+
+$CONFIG = "/etc/citadel/citadel.conf"; # Location of citadel config file
+$SPOOL = "/var/spool/citadel/bans"; # Citadel's "temp" directory, effectively
+
+##############################################################################
+##############################################################################
+#
+#                   DO NOT EDIT ANYTHING BELOW THIS LINE
+#
+##############################################################################
+##############################################################################
+
+$VERSION = "0.0.2";
+%banned_ips = ();
+%bad_ips = ();
+$time = time;
+%config = ();
+$CSF = "";
+$APF = "";
+$IPT = "/sbin/iptables";
+$ALLOWED_CONNS = 150;
+$BAN_PERIOD = 600;
+$EMAIL_TO = "";
+@ALLOWED_IPS = ();
+
+##############################################################################
+#
+#  Loading configuration ...
+#
+##############################################################################
+
+if( -e $CONFIG) {
+  require $CONFIG;
+}
+
+if(defined $config{'IPT'}) {
+  $IPT = $config{'IPT'};
+}
+
+if(defined $config{'APF'}) {
+  $APF = $config{'APF'};
+}
+
+if(defined $config{'CFF'}) {
+  $CSF = $config{'CSF'};
+}
+
+if(defined $config{'ALLOWED_CONNS'}) {
+  $ALLOWED_CONNS = $config{'ALLOWED_CONNS'};
+}
+
+if(defined $config{'EMAIL_TO'}) {
+  $EMAIL_TO = $config{'EMAIL_TO'};
+}
+
+if(defined $config{'BAN_PERIOD'}) {
+  $BAN_PERIOD = $config{'BAN_PERIOD'};
+}
+
+if(defined $config{'ALLOWED_IPS'}) {
+  @ALLOWED_IPS = split(/\s/, $config{'ALLOWED_IPS'});
+} else {
+  @ALLOWED_IPS = ( "127.0.0.1", "0.0.0.0" );
+}
+
+##############################################################################
+#
+# End configuration
+#
+##############################################################################
+
+##############################################################################
+#
+# iptables interfaces for banning and unbanning IPs
+#
+###############################################################################
+
+sub ban_ip {
+  $ip = @_[0];
+  if(length($CSF) > 0) {
+    `$CSF -d $ip`;
+  } elsif(length($APF) > 0) {
+    `$APF -d $ip citadel`;
+  } else {
+    `$IPT -I INPUT -s $ip -j DROP`;
+  }
+}
+
+sub unban_ip {
+  $ip = @_[0];
+  if(length($CSF) > 0) {
+    `$CSF -dr $ip`;
+  } elsif(length($APF) > 0) {
+    `$APF -u $ip`;
+  } else {
+    `$IPT -D INPUT -s $ip -j DROP`;
+  }
+}
+
+##############################################################################
+#
+# Look up the hostname, if existent, of an IP address.
+# This is just used for reporting, so it might not actually be called.
+#
+##############################################################################
+
+sub nslookup {
+  $ip = inet_aton(@_[0]);
+  $returnval = "*unknown*";
+  $temp = gethostbyaddr($ip, AF_INET);
+  if(length($temp) > 0) {
+    $returnval = $temp;
+  }
+  return $returnval;
+}
+
+##############################################################################
+#
+# Read the spool, unbanning any IPs that have met or exceeded their ban
+# timeout.
+#
+##############################################################################
+
+open(SPOOL, "<$SPOOL");
+while( <SPOOL> ) {
+  $temp = $_;
+  chomp($temp);
+  if($temp =~ /^([1-2]*[0-9]*[0-9]\.[1-2]*[0-9]*[0-9]\.[1-2]*[0-9]*[0-9]\.[1-2]*[0-9]*[0-9])\s([0-9]*)/) {
+    $ip = $1;
+    $bantime = $2;
+    if((($time + 0) - ($bantime + 0)) >= ($BAN_PERIOD + 0)) {
+      &unban_ip($ip);
+    } else {
+      $banned_ips{$ip} = $bantime;
+    }
+  }
+}
+close(SPOOL);
+
+##############################################################################
+#
+# Get the list of "bad IPs," which is defined as "any IP that currently has
+# more than ALLOWED_CONNS connections, inclusive."
+#
+##############################################################################
+
+open(NET, "netstat -ntu | awk '{print \$5}' | cut -d: -f1 | sort | uniq -c | sort -nr |");
+while( <NET> ) {
+  $temp = $_;
+  chomp($temp);
+  if ($temp =~ /^ *([0-9]+) *([1-2]*[0-9]*[0-9]\.[1-2]*[0-9]*[0-9]\.[1-2]*[0-9]*[0-9]\.[1-2]*[0-9]*[0-9]).*$/) {
+    $count = $1;
+    $ip = $2;
+    if(($ALLOWED_CONNS + 0) <= ($count + 0)) {
+      $bad_ips{ $2 } = $1;
+    }
+  }
+}
+close(NET);
+
+##############################################################################
+#
+# Remove the whitelisted IPs from the list of bad IPs, then ban the bad IPs.
+#
+##############################################################################
+
+foreach $ip (@ALLOWED_IPS) {
+  delete $bad_ips{$ip};
+}
+
+foreach $key (keys %bad_ips) {
+  &ban_ip($key);
+  $banned_ips{$key} = $time;
+}
+
+##############################################################################
+#
+# Write out the list of currently banned IPs, as well as the initial ban time
+# for each respective IP, to the spool for use on future runs.
+#
+##############################################################################
+
+open(SPOOL, ">$SPOOL");
+foreach $key (keys %banned_ips) {
+  printf(SPOOL "%s %s\n", $key, $banned_ips{$key});
+}
+close(SPOOL);
+
+##############################################################################
+#
+# Shoot off an email to the administrator detailing the IPs that were banned
+# during this run, provided that we have the administrator's address.
+#
+##############################################################################
+
+if((length($EMAIL_TO) > 0) && ((scalar keys(%bad_ips)) > 0)){
+  open(EMAIL, "| mail -s 'citadel ban report' $EMAIL_TO");
+  printf(EMAIL "Due to a connection count of more than %s connections each,\nthe following IP addresses have been banned for %s seconds:\n\n", $ALLOWED_CONNS, $BAN_PERIOD);
+  foreach $key (keys(%bad_ips)) {
+    printf(EMAIL "%s\t%s\n", $key, &nslookup($key));
+  }
+  close(EMAIL);
+}
+

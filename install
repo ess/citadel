@@ -1,0 +1,16 @@
+#!/bin/bash
+
+echo "Setting up configuration and directories ..."
+mkdir -p /etc/citadel
+cp citadel.conf /etc/citadel
+chown -R root.root /etc/citadel
+mkdir -p /var/spool/citadel
+chown -R root.root /var/spool/citadel
+echo "Installing citadel ..."
+cp citadel /usr/local/bin
+chown root.root /usr/local/bin/citadel
+chmod 700 /usr/local/bin/citadel
+cp citadel.cron /etc/cron.d
+chown root.root /etc/cron.d/citadel.cron
+chmod 644 /etc/cron.d/citadel.cron
+service crond restart
