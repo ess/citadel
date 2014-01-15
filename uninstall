@@ -1,0 +1,23 @@
+#!/bin/bash
+
+echo "WARNING: Do not use this script if you installed citadel via RPM. Proceeding in 5 seconds..."
+sleep 5
+echo "Removing citadel.."
+
+[ -d '/etc/citadel' ] && rm -rf /etc/citadel
+[ -d '/var/spool/citadel' ] && rm -rf /var/spool/citadel
+[ -f '/usr/local/bin/citadel' ] && rm -f /usr/local/bin/citadel
+[ -f '/etc/cron.d/citadel.cron' ] && rm -f /etc/cron.d/citadel.cron
+[ -f '/etc/logrotate.d/citadel' ] && rm -f /etc/logrotate.d/citadel
+
+if [ -f /var/run/crond.pid ]; then
+  pid=$(cat /var/run/crond.pid)
+  if [ -n ${pid} ]; then
+    kill -HUP ${pid}
+  fi
+else
+  [ -f '/etc/init.d/crond' ] && /etc/init.d/crond restart # RedHats..
+  [ -f '/etc/init.d/cron' ] && /etc/init.d/cron restart # Debians..
+fi
+
+echo "citadel has been purged."

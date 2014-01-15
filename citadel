@@ -1,4 +1,29 @@
 #!/usr/bin/env perl
+# citadel is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# citadel is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with citadel.  If not, see <http://www.gnu.org/licenses/>.
+
+
+# I doubt this works on anything older than 5.8.8. I intentionally left out
+# any new language features introduced after 5.8.8 however to ensure
+# compatibility.
+use 5.008_008;
+
+use strict;
+use warnings;
+
+use Socket;
+use Time::localtime;
+
 ############################################################################## 
 # citadel ####################################################################
 ##############################################################################
@@ -10,133 +35,424 @@
 #
 # The only real difference between the two (aside from implementation, as
 # dos-deflate was not referenced in writing citadel) is the config file,
-# located by default at /etc/citadel/citadel.conf.  The format is different
-# so that the file can be sourced by perl.
+# located by default at /etc/citadel/citadel.conf. Right now, only IPv4 is
+# supported.
 #
 ##############################################################################
 
-use Socket; # For the nslookup stuff.
 
-##############################################################################
 #
-# These values can be changed if you decide that you'd like to locate the
-# items mentioned in a different filesystem location.
-#
+# Configuration
 ##############################################################################
 
-$CONFIG = "/etc/citadel/citadel.conf"; # Location of citadel config file
-$SPOOL = "/var/spool/citadel/bans"; # Citadel's "temp" directory, effectively
+my %int_config = (
+  version => '0.1.1',
+  spool => '/var/spool/citadel/bans', 
+  conf_file => '/etc/citadel/citadel.conf',
+  log_file => '/var/log/citadel.log',
+  lock_file => '/var/lock/citadel.lock',
+  time => time,
+  not_root => '0',
+  sys_cmd_timeout_limit => '120'  # Wait this amount of seconds when running a
+                                  # system command before considering it fatal.
+);
 
-##############################################################################
-##############################################################################
-#
-#                   DO NOT EDIT ANYTHING BELOW THIS LINE
-#
-##############################################################################
-##############################################################################
+my %banned_ips = ();
+my @ban_expired_ips = ();
 
-$VERSION = "0.0.2";
-%banned_ips = ();
-%bad_ips = ();
-$time = time;
-%config = ();
-$CSF = "";
-$APF = "";
-$IPT = "/sbin/iptables";
-$ALLOWED_CONNS = 150;
-$BAN_PERIOD = 600;
-$EMAIL_TO = "";
-@ALLOWED_IPS = ();
-
-##############################################################################
 #
-#  Loading configuration ...
-#
+# Methods
 ##############################################################################
 
-if( -e $CONFIG) {
-  require $CONFIG;
+sub init {
+  # Verify we're root
+  ensure_root();
+  # Make sure we aren't already running.
+  halt_if_running();
+  # Place lock file.
+  place_lock();
 }
 
-if(defined $config{'IPT'}) {
-  $IPT = $config{'IPT'};
+sub ensure_root {
+  if ( $< != 0 ) {
+    $int_config{'not_root'} = 1;
+    die "citadel requires root level privileges!\n";
+  }
 }
 
-if(defined $config{'APF'}) {
-  $APF = $config{'APF'};
+sub get_time {
+  return ctime();
 }
 
-if(defined $config{'CFF'}) {
-  $CSF = $config{'CSF'};
+sub halt_if_running {
+  if ( -e $int_config{lock_file} ) {
+    open(FH, $int_config{lock_file}) || logger({ 
+        cat => 'c', 
+        msg => "Can't open [$int_config{lock_file}]: $!" 
+      });
+    my $lock_contents = <FH>;
+    close (FH);
+    if ( $lock_contents ) {
+      if ( kill(0 => $lock_contents) ) {
+        logger({ 
+            cat => 'c', 
+            msg => "Refusing to run, non stale lock file [$int_config{lock_file}] present.", 
+            mode => 'noclean' 
+          });
+      }
+      else {
+        handle_stale_lock();
+      }
+    }
+    else {
+      handle_stale_lock();
+    }
+  }
 }
 
-if(defined $config{'ALLOWED_CONNS'}) {
-  $ALLOWED_CONNS = $config{'ALLOWED_CONNS'};
+sub handle_stale_lock {
+  unlink($int_config{lock_file});
+  place_lock();
+  logger({ 
+      cat => 'w', 
+      msg => "Removed stale lock file [$int_config{lock_file}] (and a placed new one); Continuing..." 
+    });
 }
 
-if(defined $config{'EMAIL_TO'}) {
-  $EMAIL_TO = $config{'EMAIL_TO'};
+sub place_lock {
+  open(my $fh, '>', $int_config{lock_file}) || logger({ 
+      cat => 'c', 
+      msg => "Unable to create lock file [$int_config{lock_file}]! Got: $!" 
+    });
+  print $fh $$;
+  close($fh) || logger({ 
+      cat => 'c', 
+      msg => "Unable to close [$int_config{lock_file}] [$!]" 
+    });
 }
 
-if(defined $config{'BAN_PERIOD'}) {
-  $BAN_PERIOD = $config{'BAN_PERIOD'};
+sub read_conf_file {
+  my %config;
+  if ( ! -e $int_config{'conf_file'} ) {
+    print STDERR "Conf file ($int_config{'conf_file'}) doesn't exist!\n";
+    do_exit({ death_type => 'fatal' });
+  }
+
+  open my $config, '<', "$int_config{'conf_file'}" || logger({ 
+      cat => 'c', 
+      msg => "Can't open $int_config{'conf_file'}: $!" 
+    });
+
+  while(<$config>) {
+    chomp;
+    s/#.*//;  # ignore comments
+    s/^\s+//;  # rm leading white
+    s/\s+$//;  # rm trailing white
+    next unless length;
+    (my $key, my @value) = split /\s*=\s*/, $_;
+    $config{$key} = join '=', @value;
+  }
+  
+  return \%config;
 }
 
-if(defined $config{'ALLOWED_IPS'}) {
-  @ALLOWED_IPS = split(/\s/, $config{'ALLOWED_IPS'});
-} else {
-  @ALLOWED_IPS = ( "127.0.0.1", "0.0.0.0" );
+sub logger {
+  my $opts = shift;
+
+  my $cat_type;
+  if ( $opts->{cat} eq 'i' ) {
+    $cat_type = 'INFO:';
+  }
+  elsif ( $opts->{cat} eq 'c' ) {
+    $cat_type = 'CRIT:';
+  }
+  elsif ( $opts->{cat} eq 'w' ) {
+    $cat_type = 'WARN:';
+  }
+  
+  unless ( $int_config{'not_root'} ) {
+    if ( ! -e $int_config{'log_file'} ) {
+      open(FH,">$int_config{'log_file'}") or die "Unable to create log file! Got: $!";
+      close(FH);
+    }
+  }
+
+  if ( -w $int_config{'log_file'} ) {
+    open (LOG, ">>" , $int_config{'log_file'}) or die "Can't open $int_config{'log_file'} for writing: [$!] \n";
+    print LOG "[ " , get_time() , " ] $cat_type $opts->{msg}\n";
+    close (LOG);
+    if ( $opts->{cat} eq 'c' ) {
+      print STDERR "\nFATAL: citadel has encountered one or more errors. Be sure to review the log ($int_config{'log_file'}).\n";
+    }
+  }
+  else {
+    print "WARNING: Log file [$int_config{'log_file'}] is not writable!\n";
+    print "$cat_type $opts->{msg}\n";
+  }
+
+  if ( $opts->{cat} eq 'c' ) {
+    if ( $opts->{mode} ) {
+      if ( $opts->{mode} eq 'noclean' ) {
+        do_exit({ death_type => 'noclean' });
+      }
+    }
+    else {
+      do_exit({ death_type => 'fatal' });
+    }
+  }
 }
 
-##############################################################################
-#
-# End configuration
-#
-##############################################################################
+sub do_exit {
+  my $opts = shift;
 
-##############################################################################
-#
-# iptables interfaces for banning and unbanning IPs
-#
-###############################################################################
+  if ( $opts->{death_type} ) {
+    if ( $opts->{death_type} ne 'noclean' ) {
+      unlink($int_config{'lock_file'});
+      exit;
+    }
+    else {
+      exit 1;
+    }
+  }
+  else {
+    print "$opts->{msg}\n" if ( $opts->{msg} );
+    unlink($int_config{'lock_file'});
+    exit;
+  }
+}
+
+sub run_sys_cmd {
+  my $opts = shift;
+  eval {
+    local $SIG{ALRM} = sub {die "alarm\n"};
+    alarm $int_config{'sys_cmd_timeout_limit'};
+    `$opts->{cmd} 2> /dev/null`;
+    alarm 0;
+  };
+  if ($@) {
+    logger({
+      cat => 'c',
+      msg => "Met timeout of [$int_config{'sys_cmd_timeout_limit'}] seconds when running [$opts->{cmd}]!"
+    });
+  }
+}
+
+sub get_fw_tool {
+  my $opts = shift;
+  my $management_fw_tool;
+
+  if ( $opts->{conf}->{'auto_detect_fw_tool'} ) {
+
+    $management_fw_tool = 'iptables';
+    my $struct = {
+      fw_tools => [ 'apf','csf' ],
+      apf_present => 0,
+      csf_present => 0
+    };
+
+    for my $tool ( @{ $struct->{fw_tools} } ) {
+      system("which $tool &> /dev/null");
+      if ( $? == 0 ) {
+        $struct->{"$tool\_present"} = 1;
+      }
+    } 
+
+    if ( $struct->{csf_present} && $struct->{apf_present} ) {
+      if ( $opts->{conf}->{'auto_detect_fw_tool'} ) {
+        logger({ 
+            cat => 'c', 
+            msg => "Both apf and csf are in the bash path. Please resolve this problem, or modify $int_config{'conf_file'} to tell citadel which to use." 
+          });
+      }
+    }
+
+    $management_fw_tool = 'csf' if ( $struct->{csf_present});
+    $management_fw_tool = 'apf' if ( $struct->{apf_present});
+    logger({ cat => 'i', msg => "Using detected firewall management tool [$management_fw_tool]" });
+  }
+  else {
+    # User conf file has autodetection of FW tool disabled. Use what is set.
+    if ( defined($opts->{conf}->{'explicit_fw_tool'}) ) {
+      if ( $opts->{conf}->{'explicit_fw_tool'} eq 'apf' || $opts->{conf}->{'explicit_fw_tool'} eq 'csf' || $opts->{conf}->{'explicit_fw_tool'} eq 'iptables' ) {
+        $management_fw_tool = $opts->{conf}->{'explicit_fw_tool'}; 
+      }
+      else {
+        logger({ cat => 'c', msg => "explicit_fw_tool invalid value [$$opts->{conf}->{'explicit_fw_tool'}]" });
+      }
+    }
+    else {
+      logger({ cat => 'c', msg => "auto_detect_fw_tool is disabled in $int_config{'conf_file'}, but explicit_fw_tool is not defined!" });
+    }
+  }
+
+  return $management_fw_tool;
+}
+
+sub get_fw_command {
+  my $opts = shift;
+
+  if ( $opts->{conf}->{auto_detect_fw_tool} == 0 ) {
+
+    if ( $opts->{fw_tool} eq 'csf' ) {
+      if ( ! -e $opts->{conf}->{csf_path} ) {
+        logger({ 
+            cat => 'c', 
+            msg => "Given csf location [$opts->{conf}->{csf_path}] doesn't exist!" 
+          });
+      }
+      else {
+        return $opts->{conf}->{csf_path};
+      }
+    }
+    elsif ( $opts->{fw_tool} eq 'apf' ) {
+      if ( ! -e $opts->{conf}->{apf_path} ) {
+        logger({
+            cat => 'c',
+            msg => "Given apf location [$opts->{conf}->{apf_path}] doesn't exist!"
+          });
+      }
+      else {
+        return $opts->{conf}->{apf_path};
+      }
+    }
+    elsif ( $opts->{fw_tool} eq 'iptables' ) {
+      if ( ! -e $opts->{conf}->{iptables_path} ) {
+        logger({
+            cat => 'c',
+            msg => "Given iptables location [$opts->{conf}->{iptables_path}] doesn't exist!"
+          });
+      }
+      else {
+        return $opts->{conf}->{iptables_path};
+      }
+    }
+    else {
+      logger({ cat => 'c', msg => "unknown tool [$opts->{fw_tool}]!" });
+    }
+
+  }
+}
+
+sub get_fw_tool_block_cmd {
+  my $opts = shift;
+
+  my $fw_tool = get_fw_tool({ conf => $opts->{conf} });
+  my $base_fw_cmd = get_fw_command({ conf => $opts->{conf}, fw_tool => $fw_tool });
+  my $cmd;
+
+  if ( $fw_tool eq 'csf' ) {
+    if ( $opts->{conf}->{auto_detect_fw_tool} == 0 ) {
+      $cmd = "$base_fw_cmd -d $opts->{ip} citadel";
+    }
+    else {
+      $cmd = "csf -d $opts->{ip} citadel";
+    }
+  }
+  elsif ( $fw_tool eq 'apf' ) {
+    if ( $opts->{conf}->{auto_detect_fw_tool} == 0 ) {
+      $cmd = "$base_fw_cmd -d $opts->{ip} citadel";
+    }
+    else {
+      $cmd = "apf -d $opts->{ip} citadel";
+    }
+  }
+  else {
+    if ( $opts->{conf}->{auto_detect_fw_tool} == 0 ) {
+      $cmd = "$base_fw_cmd -I INPUT -s $opts->{ip} -j DROP";
+    }
+    else {
+      $cmd = "iptables -I INPUT -s $opts->{ip} -j DROP";
+    }
+  }
+
+  return $cmd;
+}
+
+sub get_fw_tool_unblock_cmd {
+  my $opts = shift;
+
+  my $fw_tool = get_fw_tool({ conf => $opts->{conf} });
+  my $base_fw_cmd = get_fw_command({ conf => $opts->{conf}, fw_tool => $fw_tool });
+  my $cmd;
+
+  if ( $fw_tool eq 'csf' ) {
+    if ( $opts->{conf}->{auto_detect_fw_tool} == 0 ) {
+      $cmd = "$base_fw_cmd -dr $opts->{ip}";
+    }
+    else {
+      $cmd = "csf -dr $opts->{ip}";
+    }
+  }
+  elsif ( $fw_tool eq 'apf' ) {
+    if ( $opts->{conf}->{auto_detect_fw_tool} == 0 ) {
+      $cmd = "$base_fw_cmd -u $opts->{ip}";
+    }
+    else {
+      $cmd = "apf -u $opts->{ip}";
+    }
+  }
+  else {
+    if ( $opts->{conf}->{auto_detect_fw_tool} == 0 ) {
+      $cmd = "$base_fw_cmd -D INPUT -s $opts->{ip} -j DROP";
+    }
+    else {
+      $cmd = "iptables -D INPUT -s $opts->{ip} -j DROP";
+    }
+  }
+
+  return $cmd;
+}
 
 sub ban_ip {
-  $ip = @_[0];
-  if(length($CSF) > 0) {
-    `$CSF -d $ip`;
-  } elsif(length($APF) > 0) {
-    `$APF -d $ip citadel`;
-  } else {
-    `$IPT -I INPUT -s $ip -j DROP`;
-  }
+  my $opts = shift;
+
+  my $block_cmd = get_fw_tool_block_cmd({ conf => $opts->{conf}, ip => $opts->{ip} });
+  run_sys_cmd({ cmd => "$block_cmd" });
+  
+  logger({ 
+      cat => 'w', 
+      msg => "Blocked [$opts->{ip}]; [$int_config{bad_ips}{ $opts->{ip} }] Connections" 
+    });
 }
 
 sub unban_ip {
-  $ip = @_[0];
-  if(length($CSF) > 0) {
-    `$CSF -dr $ip`;
-  } elsif(length($APF) > 0) {
-    `$APF -u $ip`;
-  } else {
-    `$IPT -D INPUT -s $ip -j DROP`;
-  }
+  my $opts = shift;
+
+  my $unblock_cmd = get_fw_tool_unblock_cmd({ conf => $opts->{conf}, ip => $opts->{ip} });
+  run_sys_cmd({ cmd => "$unblock_cmd" });
+
+  logger({ 
+      cat => 'w', 
+      msg => "UnBlocked [$opts->{ip}]; Ban expired." 
+    });
 }
 
-##############################################################################
-#
-# Look up the hostname, if existent, of an IP address.
-# This is just used for reporting, so it might not actually be called.
-#
-##############################################################################
-
 sub nslookup {
-  $ip = inet_aton(@_[0]);
-  $returnval = "*unknown*";
-  $temp = gethostbyaddr($ip, AF_INET);
-  if(length($temp) > 0) {
-    $returnval = $temp;
+  my $opts = shift;
+
+  my $iaddr = inet_aton($opts->{ip});
+  my $name = gethostbyaddr($iaddr, AF_INET);
+
+  return $name;  
+}
+
+sub get_spool_data {
+  my @spool = ();
+
+  if ( -e $int_config{'spool'} ) {
+    open my $spool, '<', "$int_config{'spool'}" || logger({ cat => 'c', msg => "Can't open $int_config{'spool'}: $!" });
+    while(<$spool>) {
+      chomp;
+      s/#.*//;  # ignore comments
+      s/^\s+//;  # rm leading white
+      s/\s+$//;  # rm trailing white
+      next unless length;
+      push(@spool, $_);
+    }
+    close($spool);
   }
-  return $returnval;
+
+  return \@spool;
 }
 
 ##############################################################################
@@ -146,84 +462,162 @@ sub nslookup {
 #
 ##############################################################################
 
-open(SPOOL, "<$SPOOL");
-while( <SPOOL> ) {
-  $temp = $_;
-  chomp($temp);
-  if($temp =~ /^([1-2]*[0-9]*[0-9]\.[1-2]*[0-9]*[0-9]\.[1-2]*[0-9]*[0-9]\.[1-2]*[0-9]*[0-9])\s([0-9]*)/) {
-    $ip = $1;
-    $bantime = $2;
-    if((($time + 0) - ($bantime + 0)) >= ($BAN_PERIOD + 0)) {
-      &unban_ip($ip);
-    } else {
+sub unblock_ip_exceeded_timeout {
+  my $opts = shift;
+
+  my $spool_data = get_spool_data();
+  for my $spool_entry ( @{ $spool_data } ) {
+    my @items = split /\s+/, $spool_entry;
+    my $ip = $items[0];
+    my $bantime = $items[1];
+
+    # Remove IPs from firewall that meet ban expire time.
+    if ( ( $int_config{time} - $bantime ) >= $opts->{conf}->{ban_period} ) {
+      unban_ip({ conf => $opts->{conf}, ip => $ip });
+      push(@ban_expired_ips, $ip);
+    }
+    else {
       $banned_ips{$ip} = $bantime;
     }
   }
+
+  # Remove IPs from spool that met ban expire time.
+  open SPOOL, ">", "$int_config{'spool'}" || logger({ cat => 'c', msg => "Unable to write [$int_config{'spool'}]: [$!]" });
+  for my $orig_spool_entry ( @{ $spool_data } ) {
+    # If this original spool entry IP is in our ban expired ip list, skip it. 
+    my @orig_items = split /\s+/, $orig_spool_entry;
+    if ( grep {/$orig_items[0]/} @ban_expired_ips ) {
+      next;
+    }
+    else {
+      my @items = split /\s+/, $orig_spool_entry;
+      printf(SPOOL "%s %s\n", $items[0], $items[1]);
+    }
+  }  
+  close(SPOOL);
+
 }
-close(SPOOL);
 
 ##############################################################################
 #
 # Get the list of "bad IPs," which is defined as "any IP that currently has
-# more than ALLOWED_CONNS connections, inclusive."
+# more than allowed_cons connections, inclusive."
 #
 ##############################################################################
 
-open(NET, "netstat -ntu | awk '{print \$5}' | cut -d: -f1 | sort | uniq -c | sort -nr |");
-while( <NET> ) {
-  $temp = $_;
-  chomp($temp);
-  if ($temp =~ /^ *([0-9]+) *([1-2]*[0-9]*[0-9]\.[1-2]*[0-9]*[0-9]\.[1-2]*[0-9]*[0-9]\.[1-2]*[0-9]*[0-9]).*$/) {
-    $count = $1;
-    $ip = $2;
-    if(($ALLOWED_CONNS + 0) <= ($count + 0)) {
-      $bad_ips{ $2 } = $1;
+sub populate_bad_ips {
+  my $opts = shift;
+
+  my %active_conns_by_ip = ( );
+  for my $line ( split /^/, `netstat -ntu --protocol=inet` ) {
+    if ( $line =~ /^\S+\s+\S+\s+\S+\s+\S+\s+(\S+):\S+/i ) {
+      my $ip = $1;
+      if ( defined($active_conns_by_ip{ $ip }) ) {
+        $active_conns_by_ip{ $ip } = $active_conns_by_ip{ $ip } + 1;
+      }
+      else {
+        $active_conns_by_ip{ $ip } = 1;
+      }
     }
   }
-}
-close(NET);
 
-##############################################################################
-#
-# Remove the whitelisted IPs from the list of bad IPs, then ban the bad IPs.
-#
-##############################################################################
-
-foreach $ip (@ALLOWED_IPS) {
-  delete $bad_ips{$ip};
-}
-
-foreach $key (keys %bad_ips) {
-  &ban_ip($key);
-  $banned_ips{$key} = $time;
-}
-
-##############################################################################
-#
-# Write out the list of currently banned IPs, as well as the initial ban time
-# for each respective IP, to the spool for use on future runs.
-#
-##############################################################################
-
-open(SPOOL, ">$SPOOL");
-foreach $key (keys %banned_ips) {
-  printf(SPOOL "%s %s\n", $key, $banned_ips{$key});
-}
-close(SPOOL);
-
-##############################################################################
-#
-# Shoot off an email to the administrator detailing the IPs that were banned
-# during this run, provided that we have the administrator's address.
-#
-##############################################################################
-
-if((length($EMAIL_TO) > 0) && ((scalar keys(%bad_ips)) > 0)){
-  open(EMAIL, "| mail -s 'citadel ban report' $EMAIL_TO");
-  printf(EMAIL "Due to a connection count of more than %s connections each,\nthe following IP addresses have been banned for %s seconds:\n\n", $ALLOWED_CONNS, $BAN_PERIOD);
-  foreach $key (keys(%bad_ips)) {
-    printf(EMAIL "%s\t%s\n", $key, &nslookup($key));
+  for my $key ( keys %active_conns_by_ip ) {
+    if ( $opts->{conf}->{allowed_cons} <= $active_conns_by_ip{$key} ) {
+      $int_config{bad_ips}{ $key } = $active_conns_by_ip{$key};
+    }
   }
-  close(EMAIL);
+
+  # Remove the whitelisted IPs from the list of bad IPs.
+  my @allowed_ips = split(':', $opts->{conf}->{allowed_ips});
+  for my $allowed_ip ( @allowed_ips ) {
+    if ( defined($int_config{bad_ips}{$allowed_ip}) ) {
+      delete $int_config{bad_ips}{$allowed_ip};
+      logger({
+          cat => 'i',
+          msg => "Ignoring ban of whitelisted IP [$allowed_ip]; [$active_conns_by_ip{$allowed_ip}] Connections"
+        });
+    }
+  }
+
+  # Remove already blocked IPs from the list of bad IPs.
+  my $spool_data = get_spool_data();
+  for my $bad_ip (keys %{ $int_config{bad_ips} }) {
+    if ( grep {/$bad_ip/} @{ $spool_data } ) {
+      # Bad IP is already in spool. Remove from bad ip list.
+      delete $int_config{bad_ips}{$bad_ip};
+      logger({ cat => 'i', msg => "Ignoring [$bad_ip] it's already blocked; [$active_conns_by_ip{$bad_ip}] Connections (probably stale)" });
+    }
+  }
+
 }
 
+sub block_bad_ips {
+  my $opts = shift;
+
+  for my $key (keys %{ $int_config{bad_ips} }) {
+    # If IP was just unblocked from ban expire, do not re-block same run.
+    unless ( grep {/$key/} @ban_expired_ips ) { 
+      ban_ip({ conf => $opts->{conf}, ip => $key });
+      $banned_ips{$key} = $int_config{time};
+    }
+  }
+
+  # Write out the list of currently banned IPs, as well as the initial ban time
+  # for each respective IP, to the spool for use on future runs.
+  open SPOOL, ">", "$int_config{'spool'}" || logger({ cat => 'c', msg => "Unable to write [$int_config{'spool'}]: [$!]" });
+  for my $key (keys %banned_ips) {
+    printf(SPOOL "%s %s\n", $key, $banned_ips{$key});
+  }
+  close(SPOOL);
+}
+
+sub email_details_of_run {
+  my $opts = shift;
+  my $ips_list = "";
+  
+  if ( defined($opts->{conf}->{email_to}) && ( (scalar keys(%{ $int_config{bad_ips} }) ) > 0 ) ) {
+    for my $key (keys(%{ $int_config{conf}{bad_ips} }) ) {
+      $ips_list .= "$key, ";
+      my $lookup = nslookup({ ip => $key });
+      if ( $lookup ) {
+        $ips_list .= "$lookup\n";
+      }
+      else {
+        $ips_list .= "[UNABLE_TO_LOOKUP_PTR]\n";
+      }
+    }
+
+    my $mail_msg = "Due to a connection count of more than $opts->{conf}->{allowed_cons} connections each, 
+the following IP addresses have been banned for $opts->{conf}->{ban_period} seconds:
+
+$ips_list
+";
+
+    my $mail_cmd_stderr = `echo \"citadel ban report\" | mail -s \"$mail_msg\"  \"$opts->{conf}->{email_to}\" 2>&1 1>/dev/null`;
+    if ( $? != 0 ) {
+      logger({ cat => 'w', msg => "Error sending email notification, got STDERR: $mail_cmd_stderr" });
+    }
+
+  }
+}
+
+
+#
+# Main
+##############################################################################
+
+my $conf_file = read_conf_file();
+init();
+logger({ 
+    cat => 'i', 
+    msg => "START_RUN; Ban_Period: [$conf_file->{ban_period}] Allowed_Cons: [$conf_file->{allowed_cons}]" 
+  });
+unblock_ip_exceeded_timeout({ conf => $conf_file });
+populate_bad_ips({ conf => $conf_file });
+block_bad_ips({ conf => $conf_file });
+email_details_of_run({ conf => $conf_file });
+do_exit();
+
+END {
+  logger({ cat => 'i', msg => "END_RUN; Shutting down." });
+}

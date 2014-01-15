@@ -1,16 +1,35 @@
 #!/bin/bash
 
-echo "Setting up configuration and directories ..."
-mkdir -p /etc/citadel
+echo "NOTICE: On RPM platforms, it is generally preferred to use the RPM for installation. Proceeding in 5 seconds.."
+sleep 5
+echo "Installing citadel.."
+
+[ ! -d '/etc/citadel' ] && mkdir -p /etc/citadel
 cp citadel.conf /etc/citadel
 chown -R root.root /etc/citadel
-mkdir -p /var/spool/citadel
+chmod 644 /etc/citadel/citadel.conf
+[ ! -d '/var/spool/citadel' ] && mkdir -p /var/spool/citadel
 chown -R root.root /var/spool/citadel
-echo "Installing citadel ..."
+[ ! -d '/usr/local/bin' ] && mkdir -p /usr/local/bin
 cp citadel /usr/local/bin
 chown root.root /usr/local/bin/citadel
 chmod 700 /usr/local/bin/citadel
+[ ! -d '/etc/cron.d' ] && mkdir -p /etc/cron.d
 cp citadel.cron /etc/cron.d
 chown root.root /etc/cron.d/citadel.cron
 chmod 644 /etc/cron.d/citadel.cron
-service crond restart
+[ ! -d '/etc/logrotate.d' ] && mkdir -p /etc/logrotate.d
+cp citadel_logrotate.d /etc/logrotate.d/citadel
+chmod 644 /etc/logrotate.d/citadel
+
+if [ -f /var/run/crond.pid ]; then
+  pid=$(cat /var/run/crond.pid)
+  if [ -n ${pid} ]; then
+    kill -HUP ${pid}
+  fi
+else
+  [ -f '/etc/init.d/crond' ] && /etc/init.d/crond restart # RedHats..
+  [ -f '/etc/init.d/cron' ] && /etc/init.d/cron restart # Debians..
+fi
+
+echo "citadel has been installed."
