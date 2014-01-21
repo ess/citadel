@@ -23,6 +23,7 @@ use warnings;
 
 use Socket;
 use Time::localtime;
+use File::Path qw(mkpath);
 
 ############################################################################## 
 # citadel ####################################################################
@@ -46,8 +47,9 @@ use Time::localtime;
 ##############################################################################
 
 my %int_config = (
-  version => '0.1.1',
+  version => '0.1.2',
   spool => '/var/spool/citadel/bans', 
+  spool_dir => '/var/spool/citadel',
   conf_file => '/etc/citadel/citadel.conf',
   log_file => '/var/log/citadel.log',
   lock_file => '/var/lock/citadel.lock',
@@ -71,6 +73,8 @@ sub init {
   halt_if_running();
   # Place lock file.
   place_lock();
+  # Create spool_dir if it doesn't exist.
+  mkpath($int_config{'spool_dir'}) if ( ! -d $int_config{'spool_dir'});
 }
 
 sub ensure_root {
@@ -576,7 +580,7 @@ sub email_details_of_run {
   my $ips_list = "";
   
   if ( defined($opts->{conf}->{email_to}) && ( (scalar keys(%{ $int_config{bad_ips} }) ) > 0 ) ) {
-    for my $key (keys(%{ $int_config{conf}{bad_ips} }) ) {
+    for my $key (keys(%{ $int_config{bad_ips} }) ) {
       $ips_list .= "$key, ";
       my $lookup = nslookup({ ip => $key });
       if ( $lookup ) {
@@ -593,7 +597,7 @@ the following IP addresses have been banned for $opts->{conf}->{ban_period} seco
 $ips_list
 ";
 
-    my $mail_cmd_stderr = `echo \"citadel ban report\" | mail -s \"$mail_msg\"  \"$opts->{conf}->{email_to}\" 2>&1 1>/dev/null`;
+    my $mail_cmd_stderr = `echo \"$mail_msg\" | mail -s \"citadel ban report\"  \"$opts->{conf}->{email_to}\" 2>&1 1>/dev/null`;
     if ( $? != 0 ) {
       logger({ cat => 'w', msg => "Error sending email notification, got STDERR: $mail_cmd_stderr" });
     }

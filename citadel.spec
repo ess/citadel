@@ -1,6 +1,6 @@
 Summary: Help guard against certain DoS attacks.
 Name: citadel
-Version: 0.1.1
+Version: 0.1.2
 Release: 1
 Group: System Tools/Utilities
 URL: http://brokenmoon.net
@@ -61,6 +61,9 @@ if [ -f /var/run/crond.pid ]; then
 fi
 
 %changelog
+* Tue Jan 21 2014 Scott Sullivan <scottgregorysullivan@gmail.com> 0.1.2-1
+- Correct bug in mail sending routine, where subject and body were reversed.
+- Create spool_dir if it doesn't exist. In mail send, loop on correct bad_ips.
 * Wed Jan 15 2014 Scott Sullivan <scottgregorysullivan@gmail.com> 0.1.1-1
 - Corrected bug in mail sending command. Require perl v5.8.8 or newer.
 * Tue Jan 14 2014 Scott Sullivan <scottgregorysullivan@gmail.com> 0.1.0-1
