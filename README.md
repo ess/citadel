@@ -12,4 +12,5 @@ If you are on a non-RPM platform, just run the 'install/uninstall' scripts as ne
 What citadel doesn't do:
 
 1.) No IPv6 support
+
 2.) No nftable support.
