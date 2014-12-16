@@ -24,6 +24,7 @@ use warnings;
 use Socket;
 use Time::localtime;
 use File::Path qw(mkpath);
+use Net::CIDR::Lite; # Not included in perl, must be installed !
 
 ############################################################################## 
 # citadel ####################################################################
@@ -47,7 +48,7 @@ use File::Path qw(mkpath);
 ##############################################################################
 
 my %int_config = (
-  version => '0.1.2',
+  version => '0.1.3',
   spool => '/var/spool/citadel/bans', 
   spool_dir => '/var/spool/citadel',
   conf_file => '/etc/citadel/citadel.conf',
@@ -534,13 +535,36 @@ sub populate_bad_ips {
   # Remove the whitelisted IPs from the list of bad IPs.
   my @allowed_ips = split(':', $opts->{conf}->{allowed_ips});
   for my $allowed_ip ( @allowed_ips ) {
-    if ( defined($int_config{bad_ips}{$allowed_ip}) ) {
+
+    # CIDR range allowed_ip..
+    if ( $allowed_ip =~ /\d+\.\d+\.\d+\.\d+\/\d+/ ) {
+      # For every current bad_ip, ensure its not whitelisted by this CIDR
+      # allowed_ip.
+      for my $bad_ip ( keys %{ $int_config{bad_ips} } ) {
+      
+        my $cidr = Net::CIDR::Lite->new;
+        $cidr->add($allowed_ip);
+        if ( $cidr->find($bad_ip) ) {
+          # bad_ip is whitelisted by CIDR allowed_ip, remove from bad_ips
+          # list.
+          delete $int_config{bad_ips}{$bad_ip};
+          logger({
+              cat => 'i',
+              msg => "Ignoring ban of whitelisted IP [$bad_ip]; [$active_conns_by_ip{$bad_ip}] Connections"
+            });
+        }
+
+      }
+    }
+    # Non CIDR allowed_ip..
+    elsif ( defined($int_config{bad_ips}{$allowed_ip}) ) {
       delete $int_config{bad_ips}{$allowed_ip};
       logger({
           cat => 'i',
           msg => "Ignoring ban of whitelisted IP [$allowed_ip]; [$active_conns_by_ip{$allowed_ip}] Connections"
         });
     }
+
   }
 
   # Remove already blocked IPs from the list of bad IPs.

@@ -32,4 +32,7 @@ else
   [ -f '/etc/init.d/cron' ] && /etc/init.d/cron restart # Debians..
 fi
 
+echo "Citadel requires Net::CIDR::Lite. Attempting installation via [cpan -i Net::CIDR::Lite] ..."
+cpan -i Net::CIDR::Lite
+
 echo "citadel has been installed."

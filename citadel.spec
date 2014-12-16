@@ -1,6 +1,6 @@
 Summary: Help guard against certain DoS attacks.
 Name: citadel
-Version: 0.1.2
+Version: 0.1.3
 Release: 1
 Group: System Tools/Utilities
 URL: http://brokenmoon.net
@@ -11,6 +11,8 @@ BuildArch: noarch
 AutoReqProv: no
 AutoReq: 0
 AutoProv: 0
+
+Requires: perl-Net-CIDR-Lite
 
 %description
 Help guard against certain DoS attacks by implementing IP blocks based on 
@@ -61,6 +63,8 @@ if [ -f /var/run/crond.pid ]; then
 fi
 
 %changelog
+* Tue Dec 16 2014 Scott Sullivan <scottgregorysullivan@gmail.com> 0.1.3-1
+- Allow CIDR range in allowed_ips in citadel.conf (issue#6).
 * Tue Jan 21 2014 Scott Sullivan <scottgregorysullivan@gmail.com> 0.1.2-1
 - Correct bug in mail sending routine, where subject and body were reversed.
 - Create spool_dir if it doesn't exist. In mail send, loop on correct bad_ips.
