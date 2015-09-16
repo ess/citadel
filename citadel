@@ -12,6 +12,7 @@
 # You should have received a copy of the GNU General Public License
 # along with citadel.  If not, see <http://www.gnu.org/licenses/>.
 
+package Citadel;
 
 # I doubt this works on anything older than 5.8.8. I intentionally left out
 # any new language features introduced after 5.8.8 however to ensure
@@ -47,8 +48,8 @@ use Net::CIDR::Lite; # Not included in perl, must be installed !
 # Configuration
 ##############################################################################
 
-my %int_config = (
-  version => '0.1.3',
+our %int_config = (
+  version => '0.1.4',
   spool => '/var/spool/citadel/bans', 
   spool_dir => '/var/spool/citadel',
   conf_file => '/etc/citadel/citadel.conf',
@@ -115,8 +116,12 @@ sub halt_if_running {
   }
 }
 
-sub handle_stale_lock {
+sub rm_lock {
   unlink($int_config{lock_file});
+}
+
+sub handle_stale_lock {
+  rm_lock();
   place_lock();
   logger({ 
       cat => 'w', 
@@ -212,7 +217,7 @@ sub do_exit {
 
   if ( $opts->{death_type} ) {
     if ( $opts->{death_type} ne 'noclean' ) {
-      unlink($int_config{'lock_file'});
+      rm_lock();
       exit;
     }
     else {
@@ -221,7 +226,7 @@ sub do_exit {
   }
   else {
     print "$opts->{msg}\n" if ( $opts->{msg} );
-    unlink($int_config{'lock_file'});
+    rm_lock();
     exit;
   }
 }
@@ -633,19 +638,23 @@ $ips_list
 #
 # Main
 ##############################################################################
+if ( $0 ne "t/citadel.t" ) {
+  my $conf_file = read_conf_file();
+  init();
+  logger({ 
+      cat => 'i', 
+      msg => "START_RUN; Ban_Period: [$conf_file->{ban_period}] Allowed_Cons: [$conf_file->{allowed_cons}]" 
+    });
+  unblock_ip_exceeded_timeout({ conf => $conf_file });
+  populate_bad_ips({ conf => $conf_file });
+  block_bad_ips({ conf => $conf_file });
+  email_details_of_run({ conf => $conf_file });
+  do_exit();
 
-my $conf_file = read_conf_file();
-init();
-logger({ 
-    cat => 'i', 
-    msg => "START_RUN; Ban_Period: [$conf_file->{ban_period}] Allowed_Cons: [$conf_file->{allowed_cons}]" 
-  });
-unblock_ip_exceeded_timeout({ conf => $conf_file });
-populate_bad_ips({ conf => $conf_file });
-block_bad_ips({ conf => $conf_file });
-email_details_of_run({ conf => $conf_file });
-do_exit();
-
-END {
-  logger({ cat => 'i', msg => "END_RUN; Shutting down." });
+  END {
+    logger({ cat => 'i', msg => "END_RUN; Shutting down." });
+  }
 }
+
+
+1;
