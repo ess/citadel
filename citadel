@@ -518,7 +518,7 @@ sub populate_bad_ips {
     if ( $line =~ /^\S+\s+\S+\s+\S+\s+\S+\s+(\S+):\S+/i ) {
       my $ip = $1;
       if ( defined($active_conns_by_ip{ $ip }) ) {
-        $active_conns_by_ip{ $ip } = $active_conns_by_ip{ $ip } + 1;
+        $active_conns_by_ip{ $ip }++;
       }
       else {
         $active_conns_by_ip{ $ip } = 1;
