@@ -106,7 +106,7 @@ is_deeply(
   [], 'Properly got no spool entries when no spool file'
 );
 open(SPOOL, '>>', '/var/spool/citadel/bans') || die "Can't write [/var/spool/citadel/bans]: $!\n";
-print SPOOL "192.168.2.2\n192.168.2.3\n192.168.2.4\n";
+print SPOOL " 192.168.2.2\n#test comment\n192.168.2.3 \n192.168.2.4\n";
 close(SPOOL);
 is_deeply(
   Citadel::get_spool_data(),
