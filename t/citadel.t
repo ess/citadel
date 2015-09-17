@@ -9,7 +9,8 @@ BEGIN {
 
 use Data::Dumper;
 use File::Copy;
-use Test::More tests => 22;
+use File::Path qw(mkpath);
+use Test::More tests => 25;
 use Test::Trap;
 use Test::Exception;
 use Citadel;
@@ -96,6 +97,26 @@ lives_ok{ Citadel::run_sys_cmd({ cmd => 'sleep 1' }) } 'run_sys_cmd runs properl
 like(Citadel::get_fw_tool({ conf => $conf_file }), qr/iptables|apf|csf/, 'get_fw_tool returned expected');
 like(Citadel::get_fw_tool_block_cmd({ conf => $conf_file }), qr/-j\s+DROP|apf\s+-d\s+|csf\s+-d\s+/, 'Got a valid block command');
 like(Citadel::get_fw_tool_unblock_cmd({ conf => $conf_file }), qr/-D\s+INPUT|apf\s+-u\s+|csf\s+-dr\s+/, 'Got a valid unblock command');
+like( Citadel::nslookup({ip =>'173.194.46.38'}), qr/\S+\.\S+/, 'nslookup of IP produced string');
+
+mkpath('/var/spool/citadel') unless (-e '/var/spool/citadel');
+unlink('/var/spool/citadel/bans') if (-e '/var/spool/citadel/bans');
+is_deeply(
+  Citadel::get_spool_data(),
+  [], 'Properly got no spool entries when no spool file'
+);
+open(SPOOL, '>>', '/var/spool/citadel/bans') || die "Can't write [/var/spool/citadel/bans]: $!\n";
+print SPOOL "192.168.2.2\n192.168.2.3\n192.168.2.4\n";
+close(SPOOL);
+is_deeply(
+  Citadel::get_spool_data(),
+  [
+    '192.168.2.2',
+    '192.168.2.3',
+    '192.168.2.4',
+  ], 'Properly got spool entries from spool file'
+);
+unlink('/var/spool/citadel/bans') if (-e '/var/spool/citadel/bans');
 
 
 
