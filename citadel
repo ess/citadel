@@ -650,10 +650,10 @@ if ( $0 ne "t/citadel.t" ) {
   block_bad_ips({ conf => $conf_file });
   email_details_of_run({ conf => $conf_file });
   do_exit();
+}
 
-  END {
-    logger({ cat => 'i', msg => "END_RUN; Shutting down." });
-  }
+END {
+  logger({ cat => 'i', msg => "END_RUN; Shutting down." });
 }
 
 
