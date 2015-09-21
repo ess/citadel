@@ -61,8 +61,8 @@ our %int_config = (
                                   # system command before considering it fatal.
 );
 
-my %banned_ips = ();
-my @ban_expired_ips = ();
+our %banned_ips = ();
+our @ban_expired_ips = ();
 
 #
 # Methods
@@ -508,6 +508,16 @@ sub unblock_ip_exceeded_timeout {
 
 }
 
+sub get_active_conns_by_ip {
+  my %active_conns_by_ip = ( );
+  for my $line ( split /^/, `netstat -ntu --protocol=inet` ) {
+    if ( $line =~ /^\S+\s+\S+\s+\S+\s+\S+\s+(\S+):\S+/i ) {
+      $active_conns_by_ip{ $1 }++;
+    }
+  }
+  return \%active_conns_by_ip;
+}
+
 ##############################################################################
 #
 # Get the list of "bad IPs," which is defined as "any IP that currently has
@@ -517,14 +527,9 @@ sub unblock_ip_exceeded_timeout {
 
 sub populate_bad_ips {
   my $opts = shift;
-
-  my %active_conns_by_ip = ( );
-  for my $line ( split /^/, `netstat -ntu --protocol=inet` ) {
-    if ( $line =~ /^\S+\s+\S+\s+\S+\s+\S+\s+(\S+):\S+/i ) {
-      my $ip = $1;
-      $active_conns_by_ip{ $ip }++;
-    }
-  }
+  
+  my $active_conns_by_ip_ref = get_active_conns_by_ip();
+  my %active_conns_by_ip = %$active_conns_by_ip_ref;
 
   for my $key ( keys %active_conns_by_ip ) {
     if ( $opts->{conf}->{allowed_cons} <= $active_conns_by_ip{$key} ) {
@@ -581,7 +586,7 @@ sub populate_bad_ips {
 
 sub block_bad_ips {
   my $opts = shift;
-
+  
   for my $key (keys %{ $int_config{bad_ips} }) {
     # If IP was just unblocked from ban expire, do not re-block same run.
     unless ( grep {/$key/} @ban_expired_ips ) { 

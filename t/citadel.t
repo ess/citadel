@@ -2,6 +2,7 @@
 
 use strict;
 use warnings;
+no warnings 'redefine';
 
 BEGIN {
   push(@INC, './');
@@ -10,7 +11,7 @@ BEGIN {
 use Data::Dumper;
 use File::Copy;
 use File::Path qw(mkpath);
-use Test::More tests => 25;
+use Test::More tests => 29;
 use Test::Trap;
 use Test::Exception;
 use Citadel;
@@ -118,6 +119,73 @@ is_deeply(
 );
 unlink('/var/spool/citadel/bans') if (-e '/var/spool/citadel/bans');
 
+## Setup mocking for unblock_ip_exceeded_timeout
+{
+  *Citadel::get_spool_data = sub {
+    return [
+             '192.168.2.100  1442841334',
+             '192.168.2.150  1442841634',
+           ]
+  };
+  *Citadel::unban_ip = sub {return 1;};
+}
+Citadel::unblock_ip_exceeded_timeout();
+is_deeply(
+  \@Citadel::ban_expired_ips,
+  [
+    '192.168.2.100',
+    '192.168.2.150',
+  ], 'ban_expired_ips populated expired IP from spool'
+);
+# Now mock get_spool_data again, this time with entries for IPs that are
+# not expired!
+my $curtime = time;
+{
+  *Citadel::get_spool_data = sub {
+    return [
+             "192.168.2.100 $curtime",
+             "192.168.2.150 $curtime",
+           ]
+  };
+  *Citadel::unban_ip = sub {return 1;};
+}
+Citadel::unblock_ip_exceeded_timeout();
+is_deeply(
+  \%Citadel::banned_ips,
+  {
+    '192.168.2.100' => $curtime,
+    '192.168.2.150' => $curtime,
+  }, 'banned_ips looks right for non-expired IP from spool'
+);
+
+## Setup mocking for block_bad_ips
+{
+  %Citadel::int_config = (
+    bad_ips => {
+      '192.168.2.100' => 1,
+      '192.168.2.150' => 1,
+    },
+    time => time,
+  );
+  *Citadel::ban_ip = sub {return 1;};
+  *Citadel::logger = sub {return 1;};
+}
+Citadel::block_bad_ips();
+is_deeply(
+  \%Citadel::banned_ips,
+  {
+    '192.168.2.100' => $Citadel::int_config{time},
+    '192.168.2.150' => $Citadel::int_config{time},
+  }, 'banned_ips was populated from block_bad_ips'
+);
+
+
+if (ref Citadel::get_active_conns_by_ip() eq ref {}) {
+  pass('get_active_conns_by_ip returned hashref');
+}
+else {
+  fail('get_active_conns_by_ip returned hashref');
+}
 
 
 
