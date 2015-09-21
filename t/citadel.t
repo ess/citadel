@@ -11,7 +11,7 @@ BEGIN {
 use Data::Dumper;
 use File::Copy;
 use File::Path qw(mkpath);
-use Test::More tests => 29;
+use Test::More tests => 30;
 use Test::Trap;
 use Test::Exception;
 use Citadel;
@@ -187,5 +187,26 @@ else {
   fail('get_active_conns_by_ip returned hashref');
 }
 
-
-
+## Setup mocking for populate_bad_ips
+{
+  *Citadel::get_active_conns_by_ip = sub {
+    return {
+      '192.168.2.100' => 150,
+      '192.168.2.101' => 151,
+      '192.168.2.102' => 50,
+      '192.168.2.103' => 1,
+      '192.168.2.104' => 200,
+      '192.168.2.105' => 203,
+    };
+  };
+  $Citadel::int_config{bad_ips} = ();
+}
+$conf_file->{allowed_ips} = '192.168.2.100:192.168.2.101/32:127.0.0.1';
+Citadel::populate_bad_ips({ conf => $conf_file });
+is_deeply(
+  $Citadel::int_config{bad_ips},
+  {
+    '192.168.2.104' => '200',
+    '192.168.2.105' => '203',
+  }, 'populate_bad_ips populated int_config{bad_ips} properly'
+);
